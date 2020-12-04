@@ -38,10 +38,13 @@ class StylesRewriter extends BroccoliFilter {
   constructor(inputNode, options = {}) {
     super(inputNode, { persist: true, ...options });
     this.options = options;
-    this.extensions = [ 'scoped.scss' ];
-    this.targetExtension = 'scoped.scss';
+    this.options.extension = this.options.extension || 'scss';
+    this.options.before = this.options.before || [];
+    this.options.after = this.options.after || [];
+    this.extensions = [ 'scoped.' + this.options.extension ];
+    this.targetExtension = 'scoped.' + this.options.extension;
   }
-  
+
   cacheKeyProcessString(string, relativePath) {
     return md5Hex([require('./package').version, string, relativePath]);
   }
@@ -52,12 +55,16 @@ class StylesRewriter extends BroccoliFilter {
 
   processString(contents, relativePath) {
     let namespace = this.options.namespace;
-    return postcss([
+    const plugins = [];
+    plugins.push(...this.options.before);
+    plugins.push([
       rewriterPlugin({
         filename: `${ namespace }/${ relativePath }`,
         deep: false
       })
-    ])
+    ]);
+    plugins.push(...this.options.after);
+    return postcss(plugins)
     .process(contents, {
       from: relativePath,
       to: relativePath,
@@ -107,6 +114,7 @@ class TemplateStylesImportProcessor extends BroccoliFilter {
     });
 
     this.options = options;
+    this.options.styleExtension = options.styleExtension || 'scss';
     this._console = this.options.console || console;
 
     this.extensions = ['hbs', 'handlebars'];
@@ -116,7 +124,7 @@ class TemplateStylesImportProcessor extends BroccoliFilter {
   baseDir() {
     return __dirname;
   }
-  
+
   cacheKeyProcessString(string, relativePath) {
     return md5Hex([require('./package').version, string, relativePath]);
   }
@@ -124,7 +132,7 @@ class TemplateStylesImportProcessor extends BroccoliFilter {
   processString(contents, relativePath) {
     let imports = [];
     let rewrittenContents = contents.replace(IMPORT_PATTERN, (_, localName, importPath) => {
-      if (!importPath.endsWith('.scoped.scss')) { // .scss or other extensions
+      if (!importPath.endsWith('.scoped.' + this.options.styleExtension)) {
         return _;
       }
       if (importPath.startsWith('.')) {
@@ -173,6 +181,19 @@ class TemplateStylesImportProcessor extends BroccoliFilter {
 module.exports = {
   name: require("./package").name,
 
+  _getAddonOptions() {
+    const parentOptions = this.parent && this.parent.options;
+    const appOptions = this.app && this.app.options;
+
+    return (parentOptions || appOptions || {})['ember-template-styles-import'] || {
+      extension: 'scss',
+      plugins: {
+        before: [],
+        after: []
+      }
+    };
+  },
+
   included(includer) {
     this.includer = includer;
     this.definedClasses = new Map();
@@ -201,16 +222,22 @@ module.exports = {
       trees.push(this._scopedStyles(path.join(this.parent.root, 'app'), this.parent.name()));
     }
     if (isDummyAppBuild(this)) {
-      trees.push(this._scopedStyles(path.join(this.project.root, 'app'), this.parent.name(), `${ this.parent.name() }-pod-styles.scss`));
+      const config =  this._getAddonOptions();
+      trees.push(this._scopedStyles(path.join(this.project.root, 'app'), this.parent.name(), `${this.parent.name()}-pod-styles.${config.extension}`));
       trees.push(this._scopedStyles(path.join(this.project.root, 'tests', 'dummy', 'app'), 'dummy'));
     }
     return new Merge(trees);
   },
 
-  _scopedStyles(tree, namespace, outputFile = 'pod-styles.scss') {
-    tree = new Funnel(tree, { include: [ `**/*.scoped.scss` ]});
+  _scopedStyles(tree, namespace, outputFile) {
+    const config =  this._getAddonOptions();
+    outputFile = outputFile || `pod-styles.${config.extension}`
+    tree = new Funnel(tree, { include: [ `**/*.scoped.${config.extension}` ]});
     tree = new StylesRewriter(tree, {
-      namespace
+      namespace,
+      extension: config.style.extension,
+      before: config.style.plugins.before,
+      after: config.style.plugins.after,
     });
     tree = new Concat(tree, { allowNone: true, outputFile });
     return tree;
@@ -236,7 +263,7 @@ module.exports = {
       name: 'ember-template-styles-import',
       ext: 'hbs',
       toTree: (tree) => {
-        tree = new TemplateStylesImportProcessor(tree, { root: componentsRoot });
+        tree = new TemplateStylesImportProcessor(tree, { root: componentsRoot, styleExtension: this._getAddonOptions().extension });
         return tree;
       }
     });
